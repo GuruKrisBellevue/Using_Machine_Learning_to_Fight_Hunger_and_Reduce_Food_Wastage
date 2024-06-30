@@ -1,0 +1,1138 @@
+---
+title: "Using Machine Learning to Reduce Food Wastage and Fight Hunger"
+author: "Guruprasad Velikadu Krishnamoorthy"
+date: "2024-06-30"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.dim = c(8, 6))
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 58), tidy = TRUE)
+options(dplyr.summarise.inform = FALSE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+```{r}
+# Calling the Libraries used
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(readr)
+library(ggplot2)
+library(ggthemes)
+library(tidyr)
+library(DT)
+library(scales)
+library(stringr)
+library(knitr)
+library(FactoMineR)
+library(ggpubr)
+library(kableExtra)
+library(magrittr)
+library(ggfortify)
+library(reshape2)
+library(treemap)
+library(leaflet)
+library(plotly)
+library(gt)
+library(forcats)
+library(caret)
+library(fastDummies)
+library(tidyverse)
+library(purrr)
+library(vtreat)
+library(broom)
+library(tidymodels)
+library(tidyverse)
+library(reshape2)
+library(plyr)
+library(scales)
+library(corrplot)
+library(ggthemes)
+library(ggalt)
+library(maps)
+library(ggdendro)
+library(crosstalk)
+library(zoo)
+library(glmnet)
+library(dplyr)
+library(psych)
+library(ggcorrplot)
+library(factoextra)
+library(recipes)
+# Setting the preferance
+tidymodels_prefer()
+conflicted::conflicts_prefer(dplyr::mutate)
+conflicted::conflicts_prefer(dplyr::count)
+conflicted::conflicts_prefer(dplyr::arrange)
+```
+
+# Data Extraction
+
+```{r}
+# Reading the data from csv file and loading into a Dataframe
+food_surplus_dtl_df_orig <-  read_csv("US_State_Food_Surplus_Detail.csv")
+food_surplus_summ_df_orig <-  read_csv("US_State_Food_Surplus_Summary.csv")
+```
+
+```{r}
+# Printing few rows from Dataframe for Display
+food_surplus_dtl_df <- food_surplus_dtl_df_orig
+food_surplus_summ_df <- food_surplus_summ_df_orig
+kbl(head(food_surplus_dtl_df),caption = "Food Surplus Detail Dataframe", booktabs = T) %>% kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+```{r}
+# Printing the summary of the dataframe
+summary(food_surplus_dtl_df)
+```
+
+
+```{r}
+# Examining teh sructure of teh Dataframe
+str(food_surplus_dtl_df)
+```
+
+```{r}
+# Reusable function to Find Nulls
+find_nulls <- function(col) {
+    sum(is.na(col))
+}
+# Reusable function to Remove Dollar sign
+remove_dollar_sign <- function(col) {
+     as.numeric(stringr::str_remove(col,stringr::fixed("$")))
+}
+
+# Reusable function to Remove And sign
+replace_and_sign <- function(col) {
+     stringr::str_replace_all(col,stringr::fixed("&"),"and")
+}
+
+# Reusable function to Remove Special Characters
+remove_splchars <- function(col) {
+     stringr::str_replace_all(col,stringr::fixed(c("."="","-"=" ")))
+}
+
+# Reusable function to convert column values to Upper case
+convert_toupper <- function(col) {
+    toupper(col)
+}
+
+# Reusable function to Treat Numeric columns
+treat_numeric <- function(col) {
+    round(col/1000,2)
+}
+
+# Reusable function to Treat Outliers
+treat_outliers <- function(df,col) {
+    box_stat_col <- boxplot.stats(col)
+    iqr_val <- box_stat_col$stats[4] - box_stat_col$stats[2]
+    lower_whisker <- box_stat_col$stats[2] - 1.5 * iqr_val
+    upper_whisker <- box_stat_col$stats[4] + 1.5 * iqr_val
+    # Excluding the outliers and returns the Dataframe
+    df <- df %>% mutate(is_outlier=(col> upper_whisker |   col < lower_whisker)) %>%  filter(!is_outlier) %>% select(-is_outlier)
+    return(df)
+}
+```
+
+```{r}
+# Reusable function to map State name to Region
+assign_regions <- function(state)
+{
+    ifelse(state %in% c("MAINE","VERMONT","MASSACHUSETTS","RHODE ISLAND","CONNECTICUT","NEW HAMPSHIRE"),"NEW_ENGLAND"
+           ,ifelse(state %in% c("NEW YORK","PENNSYLVANIA","NEW JERSEY","DELAWARE","MARYLAND"),"MID_ATLANTIC",
+                   ifelse(state %in% c("ARKANSAS","LOUISIANA","MISSISSIPPI","ALABAMA","GEORGIA","FLORIDA","TENNESSEE","KENTUCKY","VIRGINIA","WEST VIRGINIA","NORTH CAROLINA","SOUTH CAROLINA"),"SOUTH_EAST",
+                          ifelse(state %in% c("NORTH DAKOTA","SOUTH DAKOTA","NEBRASKA","KANSAS","MISSOURI","IOWA","MINNESOTA","WISCONSIN","ILLINOIS","MICHIGAN","INDIANA","OHIO"),"MID_WEST",
+                                 ifelse(state %in% c("NEVADA","UTAH","COLORADO","WYOMING","IDAHO","MONTANA"),"ROCKY_MOUNTAIN_STATES",
+                                        ifelse(state %in% c("WASHINGTON","CALIFORNIA","OREGON","ALASKA","HAWAII"),"PACIFIC_COASTAL",
+                                               ifelse(state %in% c("ARIZONA","NEW MEXICO","OKLAHOMA","TEXAS"),"SOUTH_WEST",
+                                                      ifelse(state %in% c("DISTRICT OF COLUMBIA"),"DISTRICT OF COLUMBIA","Not a Valid US State"
+                                                      )
+                                               )
+                                        )
+                                 )
+                          )
+                   )
+                   
+                   
+           )
+           
+           
+    )
+    
+}
+```
+
+```{r}
+# Reading the data from US Poverty Rate file
+us_poverty_orig <- read_excel("US_Poverty_Rates.xlsx") 
+us_poverty_df <- us_poverty_orig  
+colnames(us_poverty_df) <- us_poverty_df[1,]
+# Selecting only the required columns
+us_poverty_df <- us_poverty_df[3:53,1:4]
+us_poverty_df["State"] <- lapply(us_poverty_df["State"], convert_toupper)
+us_poverty_df %<>% rename(state=State)
+kbl(head(us_poverty_df),caption = "US Poverty Rates", booktabs = T) %>% kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+```{r}
+# Reading the data from US Homelessness file
+us_homeless_orig <- read_excel("Homeless_Populations_by_State.xlsx") 
+us_homeless_2022_df <- us_homeless_orig
+colnames(us_homeless_2022_df) <- us_homeless_2022_df[1,]
+# Renaming columns and selecting the required columns
+us_homeless_2022_df <- us_homeless_2022_df[2:56,1:2] %>% rename(homelessness_2022=`Total Year-Round Beds (ES, TH, SH)`)
+us_homeless_2022_df %<>% rename(Code=State)
+```
+
+```{r}
+# Reading the data from state abbreviation file
+state_abbr_df <- read.csv("state_abbr.csv")
+state_df <- state_abbr_df %>% select(Code,state)
+us_homeless_2022_df1 <- us_homeless_2022_df %>% inner_join(state_df, by="Code") %>% select(state,homelessness_2022)
+kbl(head(us_homeless_2022_df1),caption = "US Homelessness Dataframe", booktabs = T) %>% kable_styling(latex_options = c("striped", "hold_position"))
+```
+```{r}
+# Reading the data from US Population file
+us_pop_orig <-  read_excel("US_Population.xlsx")
+us_pop_df <- us_pop_orig
+colnames(us_pop_df) <- us_pop_df[1,]
+# Selecting only the required Rows from the Dataframe
+us_pop_df <- us_pop_df[7:57,]
+us_pop_df["Geographic Area"] <- lapply(us_pop_df["Geographic Area"], convert_toupper)
+us_pop_df %<>%  rename(state=`Geographic Area`) %>% select(state,`2020`:`2023`)
+kbl(head(us_pop_df),caption = "US Population Dataframe", booktabs = T) %>% kable_styling(latex_options = c("striped", "hold_position"))
+```
+# Data Wrangling
+
+```{r}
+# Finding Nulls in the Food Surplus dataframe
+apply(food_surplus_dtl_df, 2, find_nulls)
+```
+
+```{r}
+# Finding Nulls using vTreat Package
+
+missing_val_stats <- food_surplus_dtl_df %>% 
+  gather(Features, value) %>% 
+  group_by(Features) %>% 
+  count(na = is.na(value)) %>% 
+  pivot_wider(names_from = na, values_from = n, values_fill = 0) %>% 
+  mutate(Percent_missing = (`TRUE`/sum(`TRUE`, `FALSE`))*100) %>% 
+  ungroup()
+# Displaying the results
+missing_val_stats %>%  gt()
+```
+```{r}
+# Examining the nulls by only extracting the rows with nulls
+food_surplus_dtl_df %>% filter(is.na(meals_wasted)) %>% head(5)
+```
+
+
+
+```{r}
+# Excluding the rows with nulls as data was missing for primary columns. In other cases, they were imputed with 0 or NA
+food_surplus_dtl_df1 <- food_surplus_dtl_df %>% filter(!is.na(meals_wasted)) %>% mutate(sub_sector = ifelse(is.na(sub_sector), "NA", sub_sector), sub_sector_category = ifelse(is.na(sub_sector_category), "NA", sub_sector_category) , tons_surplus = ifelse(is.na(tons_surplus), 0, tons_surplus)) 
+food_surplus_dtl_df1 %>% head(5)
+```
+
+```{r}
+# Examining the Nulls in Food  Surplus Dataframe and everything looks clean
+apply(food_surplus_dtl_df1, 2, find_nulls)
+```
+
+
+```{r}
+# Extracting the column names with the word tons
+tons_colnames <- food_surplus_dtl_df1 %>% select(contains("tons")) %>%  colnames
+# Removing Dollar sign by applying the function
+food_surplus_dtl_df1[tons_colnames] <- lapply(food_surplus_dtl_df1[tons_colnames], remove_dollar_sign)
+food_surplus_dtl_df1["us_dollars_surplus"] <- lapply(food_surplus_dtl_df1["us_dollars_surplus"], remove_dollar_sign)
+# Extracting the character columns
+char_colnames <- food_surplus_dtl_df1 %>% select(is.character) %>%  colnames
+# Removing And Sign from the data
+food_surplus_dtl_df1[char_colnames] <- lapply(food_surplus_dtl_df1[char_colnames], replace_and_sign)
+# Removing special characters
+food_surplus_dtl_df1[char_colnames] <- lapply(food_surplus_dtl_df1[char_colnames], remove_splchars)
+# Converting the data to Upper case
+food_surplus_dtl_df1[char_colnames] <- lapply(food_surplus_dtl_df1[char_colnames], convert_toupper)
+food_surplus_dtl_df1$year <- as.integer(food_surplus_dtl_df1$year)
+dbl_colnames <- food_surplus_dtl_df1 %>% select(is.double) %>%  colnames
+# Treating Numeric data
+food_surplus_dtl_df1[dbl_colnames] <- lapply(food_surplus_dtl_df1[dbl_colnames], treat_numeric)
+```
+
+```{r}
+# Validating Nulls in the Summary Dataframe
+apply(food_surplus_summ_df, 2, find_nulls)
+```
+
+```{r}
+# Extracting the character columns in Summary Dataframe
+char_colnames2 <- food_surplus_summ_df %>% select(is.character) %>%  colnames
+# Remove the And Sign
+food_surplus_summ_df[char_colnames2] <- lapply(food_surplus_summ_df[char_colnames2], replace_and_sign)
+# Removing special characters from Summary Dataframe
+food_surplus_summ_df[char_colnames2] <- lapply(food_surplus_summ_df[char_colnames2], remove_splchars)
+# Convering column values to Upper case
+food_surplus_summ_df[char_colnames2] <- lapply(food_surplus_summ_df[char_colnames2], convert_toupper)
+dbl_colnames2 <- food_surplus_summ_df %>% select(is.double) %>%  colnames
+food_surplus_summ_df[dbl_colnames2] <- lapply(food_surplus_summ_df[dbl_colnames2], treat_numeric)
+```
+
+```{r}
+kbl(head(food_surplus_summ_df),caption = "Food Surplus Summary Dataframe", booktabs = T) %>% kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+
+
+```{r}
+# Finding unique values in sector variable in Summary dataframe
+food_surplus_summ_df %>% count(sector)
+```
+
+```{r}
+# Creating a variable that contains the list of sector values that contains SERVICE
+FS_categ <- unlist(food_surplus_dtl_df1[str_detect(food_surplus_dtl_df1$sector,"SERVICE"),"sector"] %>% unique())
+# Creating a variable that contains the list of sector values that contains MANUFACT
+MF_categ <- unlist(food_surplus_dtl_df1[str_detect(food_surplus_dtl_df1$sector,"MANUFACT"),"sector"] %>% unique())
+# Creating a variable that contains the list of sector values that contains RESIDEN
+RS_categ <- unlist(food_surplus_dtl_df1[str_detect(food_surplus_dtl_df1$sector,"RESIDEN"),"sector"] %>% unique())
+# Creating a variable that contains the list of sector values that contains BEVERAGE
+bev_categ <- unlist(food_surplus_dtl_df1[str_detect(food_surplus_dtl_df1$food_type,"BEVERAGE"),"food_type"] %>% unique())
+NA_categ <- c("NOT APPLICABLE","NA")
+```
+
+
+
+```{r}
+#  Using fct_collapse to standardize the values
+food_surplus_dtl_df1 <- food_surplus_dtl_df1 %>%
+  mutate(sector = fct_collapse(sector, 
+                               FOODSERVICE = FS_categ,
+                               MANUFACTURING = MF_categ,
+                               RESIDENTIAL = RS_categ
+                               )) 
+# Finding unique values in sector variable in Detail dataframe
+ food_surplus_dtl_df1   %>% count(sector)
+```
+
+
+```{r}
+# Finding unique values in sub sector variable in Detail dataframe
+food_surplus_dtl_df1 %>% count(sub_sector,sort=TRUE)
+```
+
+```{r}
+# Treating the Not applicable values
+food_surplus_dtl_df1 <- food_surplus_dtl_df1 %>%
+  mutate(sub_sector = fct_collapse(sub_sector, 
+                               `NOT APPLICABLE` = NA_categ
+                               )) 
+# Finding unique values in sector variable in Detail dataframe
+food_surplus_dtl_df1 %>% count(sub_sector,sort=TRUE)
+```
+```{r}
+# Finding unique values in subsector variable in Summary dataframe
+food_surplus_summ_df %>% count(sub_sector,sort=TRUE)
+```
+
+
+```{r}
+# Finding unique values in sub sector category variable in Detail dataframe
+food_surplus_dtl_df1 %>%  count(sub_sector_category,sort=TRUE)
+```
+
+```{r}
+# Treating Not applicable values in the sub sector category values
+food_surplus_dtl_df1 <- food_surplus_dtl_df1 %>%
+  mutate(sub_sector_category = fct_collapse(sub_sector_category, 
+                               `NOT APPLICABLE` = NA_categ
+                               )) 
+# Finding unique values in sub sector category variable in Detail dataframe
+food_surplus_dtl_df1 %>% count(sub_sector_category,sort=TRUE)
+```
+```{r}
+# Finding unique values in sub sector category variable in summary dataframe
+food_surplus_summ_df %>% count(sub_sector_category,sort=TRUE)
+```
+
+
+```{r}
+# Converting the character columns to factor
+food_surplus_dtl_df1$food_type <- as.factor(food_surplus_dtl_df1$food_type)
+food_surplus_dtl_df1$state <- as.factor(food_surplus_dtl_df1$state)
+food_surplus_dtl_df1 <- food_surplus_dtl_df1 %>%
+  mutate(food_type = fct_collapse(food_type, 
+                               `READY TO DRINK BEVERAGES` = bev_categ
+                               )) 
+# Finding unique values in food type variable in Detail dataframe
+food_surplus_dtl_df1 %>%  count(food_type,sort=TRUE)
+```
+
+```{r}
+# Finding unique values in food type variable in Summary dataframe
+food_surplus_summ_df %>%  count(food_type,sort=TRUE)
+```
+
+```{r}
+# Examining the structure of the Food Surplus Detail Dataframe
+str(food_surplus_dtl_df1)
+```
+```{r}
+# Creating dataframe for 2022 data
+food_surplus_2022_df1 <- food_surplus_dtl_df1 %>% filter(year==2022)
+kbl(head(food_surplus_2022_df1),caption = "Food Surplus 2022 Dataframe", booktabs = T) %>% kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+
+
+```{r}
+# Creating a Combined Dataframe from the Food Surplus, Population, Poverty and Homelessness dataframe
+join_df <- food_surplus_2022_df1 %>% inner_join(us_pop_df[c("state","2022")], by="state") %>% rename(population_2022=`2022`) %>% inner_join(us_poverty_df[c("state","2022")], by="state") %>% rename(poverty_2022=`2022`) %>% inner_join(us_homeless_2022_df1, by="state")
+# Checking for Nulls in the combined dataframe
+apply(join_df, 2, find_nulls)
+```
+
+
+```{r}
+# Adding Region column to the join dataframe by calling the assign regions function
+join_df <- join_df %>% mutate(region = assign_regions(join_df$state))
+join_df$region <- as.factor(join_df$region)
+# Treating outliers in the meals wasted column of join Datframe
+join_df <- treat_outliers(join_df,join_df$meals_wasted)
+join_df <- join_df[join_df$meals_wasted>10,]
+join_df %>% dim
+```
+
+```{r}
+kbl(head(join_df),caption = "Merged Dataframe", booktabs = T) %>% kable_styling(latex_options = c("striped", "hold_position"))
+```
+# Exploratory Data Analysis
+
+```{r}
+# Creating a Dataframe for New England Data
+new_england_df1 <- join_df %>% filter(region=="NEW_ENGLAND")
+# Plotting a scatter plot of Donated Food vs Food surplus based on the population
+ggplot(new_england_df1, aes(x=tons_surplus,y=tons_donated,color=population_2022/100000)) +
+  geom_point()+    scale_color_gradient(low = 'yellow', high = 'red')+
+    labs(y="Food Donated (in million Tons)", 
+       x="Food Surplus (in million Tons)", 
+       title="Food Donated vs Produced in Surplus in New England Region in 2022")+ 
+       theme_dark()+ 
+  guides(color = guide_legend(title = "Population(in Millions)")) +
+      theme(plot.title = element_text(size=13),axis.text.x= element_text(size=13),
+                            axis.text.y= element_text(size=13), axis.title=element_text(size=13))
+```
+
+```{r}
+# Plotting a scatter plot of Donated Food vs Food surplus based on the sector
+ggplot(new_england_df1, aes(x=tons_surplus,y=tons_donated,color=sector)) +
+  geom_point()+    #scale_color_gradient(low = 'yellow', high = 'red')+
+    labs(y="Food Donated (in million Tons)", 
+       x="Food Surplus (in million Tons)", 
+       title="Food Donated vs Produced in Surplus in New England Region by Sector in 2022")+ 
+       theme_dark()+ 
+  guides(color = guide_legend(title = "Sector")) +
+      theme(plot.title = element_text(size=13),axis.text.x= element_text(size=13),
+                            axis.text.y= element_text(size=13), axis.title=element_text(size=13))
+```
+
+```{r}
+# Creating  dataframe for South West Region
+density_df <- join_df %>% filter(region=="SOUTH_WEST")
+# Plotting Density Plot
+plot4 <- ggplot(density_df,aes(log(meals_wasted), fill=as.factor(state)))+geom_density(alpha=0.3)+labs(x="Meals Wasted (in Log scale)",y="Distribution of Data",title="Density Plot of Meals wasted in South West in 2022") 
+p4 <- ggplotly(plot4, width=800, height=600)  %>% plotly::layout(legend = list(title=list(text='State')))                                                        
+p4
+```
+
+
+```{r}
+# Creating a Dataframe for Histogram
+hist_df <- join_df %>% filter(region=="SOUTH_WEST")
+# Plotting Histogram on Log scale of Meals wasted
+hist_plot <- ggplot(hist_df,aes(log(meals_wasted), fill=as.factor(state)))+geom_histogram(alpha=0.5)+labs(x="Meals Wasted (in Log scale)",y="Distribution of Data",title="<b> Histogram of Meals wasted in South West in 2022</b>") 
+p5 <- ggplotly(hist_plot, width=800, height=600)  %>% plotly::layout(legend = list(title=list(text='State')))                                                        
+p5
+```
+
+
+```{r}
+# Creating  Boxplot of Meals wasted based on the sector
+boxplot_fig <- plot_ly(new_england_df1, y = ~meals_wasted, color = ~sector, type = "box")
+boxplot_fig <-  boxplot_fig %>% plotly::layout(title = "<b>Box Plots of Meals Wasted in New England region by Sector in 2022</b>")
+boxplot_fig
+```
+
+
+
+```{r}
+# Creating a subset of New England Dataframe 
+new_england_df2 <- new_england_df1 %>% count(sector,sort=TRUE) %>% mutate(count=n) 
+new_england_df2$sector <- factor(new_england_df2$sector , levels = unique(new_england_df2$sector )[order(new_england_df2$count, decreasing = TRUE)])
+# Plotting count plot of the sectors in New England Region
+new_england_df2 %>% 
+    plot_ly(x=~sector,  
+          y=~count, 
+          color=~sector,
+          text = ~paste("$",count),
+          textfont = list(color = "black",  size = 10),
+          ## below 3 lines for the bar label and hover text
+          textposition = "outside",
+          texttemplate = '%{y:.2s}'
+          ) %>%  
+  add_bars(width=0.5) %>% plotly::layout(title="<b>Frequency of Sector in New England in 2022</b>")
+```
+
+## Research Questions
+
+#### 1.	Which Mid-western state wasted the most food in 2022 and by how much?
+```{r}
+# Creating a Dataframe for Mid west data
+mid_west_df <- join_df %>%  filter(region == "MID_WEST") %>% group_by(state) %>% dplyr::summarize(total_meals_wasted=sum(meals_wasted)) %>% arrange(desc(total_meals_wasted)) %>%  head(15)
+median_meals_wasted <- mid_west_df$total_meals_wasted %>% median()
+# Plotting Bar plot with a Median Line
+ggplot(data = mid_west_df,
+       aes(x = reorder(state, -total_meals_wasted), y = total_meals_wasted/1000)) +
+  geom_col( fill = '#90EE90') + geom_text(aes(label = round(total_meals_wasted/1000)), vjust = 1)+
+  geom_hline(yintercept = median_meals_wasted/1000, color = '#DC3023',
+             linetype = 2, size = 1) +
+  theme_minimal() + 
+  labs(title = 'Meals wasted by Midwest states in 2022',
+       x = '',
+       y = 'Meals Wasted (in Thousands)') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0))
+```
+
+
+#### 2.	What was the trend of surplus food production in the U.S. over the years?
+
+```{r}
+conflicted::conflicts_prefer(dplyr::summarize)
+# Creating  a subset Dataframe with summary data
+food_surplus_dtl_df2 <- food_surplus_dtl_df1 %>% mutate(region = assign_regions(food_surplus_dtl_df1$state))
+food_surplus_df11 <- food_surplus_dtl_df2 %>% group_by(year,sector) %>% summarize(total_surplus=sum(tons_surplus))
+food_surplus_df11$year <- as.factor(food_surplus_df11$year)
+
+# Creating a LIne Plot of Surplus Production vs Years
+fig1 <- plot_ly(data=food_surplus_df11, x = ~year, y = ~total_surplus, type = 'scatter', mode = 'markers',color=~sector, line = list(width = 1, dash = "solid",shape = "linear")) %>% 
+  plotly::layout(title="<b>Surplus Food production by sector from 2010-2022</b>",
+         xaxis = list(title=" "),
+         yaxis = list(title = "Surplus production (in Tons)"),
+         legend = list(title = list(text = "Sector")))
+fig1
+```
+
+#### 3.	What was the most wasted Farm food in 2022?
+
+```{r}
+# Creating a dataframe with only Farm Data
+wasted_farm_df <- food_surplus_dtl_df2 %>% filter(sector=="FARM") %>% group_by(food_category) %>% summarize(total_tons_wasted=sum(tons_waste)) %>% arrange(desc(total_tons_wasted)) %>% head(10)
+wasted_farm_df$food_category <- factor(wasted_farm_df$food_category , levels = unique(wasted_farm_df$food_category )[order(wasted_farm_df$total_tons_wasted, decreasing = TRUE)])
+# Plotting Bar plot on the wasted Farm Data
+wasted_farm_df %>% 
+    plot_ly(x=~food_category,  
+          y=~total_tons_wasted, 
+          color=~food_category,
+          text = ~paste("$",total_tons_wasted),
+          textfont = list(color = "black",  size = 10),
+          ## below 3 lines for the bar label and hover text
+          textposition = "outside",
+          texttemplate = '%{y:.2s}'
+          ) %>% 
+  plotly::layout(title = '<b>Most wasted Farm food in 2022</b>', plot_bgcolor = "#e5ecf6", xaxis = list(title = ''), 
+         yaxis = list(title = 'Food Wasted (in Tons)')) %>% 
+  add_bars(width=0.5)
+```
+
+#### 4.	Which sector donated the most amount of food?
+
+```{r}
+# Creating a Dataframe with summary of Most donated sector
+most_donated_df1 <- food_surplus_dtl_df2 %>% filter(year==2022) %>% group_by(sector) %>% summarize(total_tons_donated=sum(tons_donated)) %>% arrange(desc(total_tons_donated))
+most_donated_df1$sector <- factor(most_donated_df1$sector , levels = unique(most_donated_df1$sector )[order(most_donated_df1$total_tons_donated, decreasing = TRUE)])
+# Creating a Bar plot of Food donated by sector
+most_donated_df1 %>% 
+    plot_ly(x=~sector,  
+          y=~total_tons_donated, 
+          color=~sector,
+          text = ~paste("$",total_tons_donated),
+          textfont = list(color = "black",  size = 10),
+          ## below 3 lines for the bar label and hover text
+          textposition = "outside",
+          texttemplate = '%{y:.2s}'
+          ) %>% 
+  plotly::layout(title = '<b>Food donated by Sector in 2022 in New England</b>', plot_bgcolor = "#e5ecf6", xaxis = list(title = ''), 
+         yaxis = list(title = 'Food Donated (in Tons)')) %>% 
+  add_bars(width=0.5)
+```
+
+
+#### 5.	Which state wasted the most amount of food and which sectors in 2022?
+
+```{r}
+# Creating a  Dataframe to compute the Uneaten food
+state_uneaten_df1 <- food_surplus_dtl_df2 %>% filter(year==2022) %>% group_by(state,sector) %>% summarize(food_uneaten=sum(tons_uneaten))  %>% ungroup() %>% group_by(state) %>% mutate(total_food_uneaten=sum(food_uneaten)) %>% arrange(desc(total_food_uneaten)) %>%  head(50) 
+state_uneaten_df1$state <- factor(state_uneaten_df1$state , levels = unique(state_uneaten_df1$state )[order(state_uneaten_df1$total_food_uneaten, decreasing = TRUE)])
+# Plotting a Stacked Bar chart of wasted food by State and sector
+state_uneaten_df1 %>% 
+    plot_ly(x=~state, 
+          y=~food_uneaten, 
+          color=~sector,
+          textfont = list(color = "black",  size = 10),
+          ## below 3 lines for the bar label and hover text
+          textposition = "inside",
+          texttemplate = '%{y:.2s}'
+          ) %>% 
+  add_bars() %>% 
+  plotly::layout(title="<b>Food wasted in 2022 by state and sector</b>",
+         xaxis = list(title=""),
+         yaxis = list(title = "Food Wasted (in Tons)"),
+         barmode="stack",
+         uniformtext=list(minsize=10, mode='hide'),
+         legend = list(title = list(text = "Sector")))
+```
+
+#### 6. Which region wasted most food unharvested?
+
+```{r}
+# Creata a dataframe of Unharvested data
+unharvested_df <- food_surplus_dtl_df2 %>% filter(year==2022) %>% group_by(region) %>% summarize(total_not_harvested=sum(tons_not_harvested))
+# Creating a Pie Chart on the Unharvested Dataframe
+fig <- plot_ly(unharvested_df, type='pie', labels = ~region, values = ~total_not_harvested,text = ~paste(total_not_harvested),
+          hoverinfo = "text",
+          textfont = list(color = "black",  size = 10),
+          ## below 3 lines for the bar label and hover text
+          textposition = "inside"
+          )
+# Updating the Title and Legend of the Pie plot
+fig <- fig %>% plotly::layout(uniformtext=list(minsize=12, mode='hide'), title="<b> Unharvested food (in Tons) by Region in 2022</b>",
+                      legend = list(title = list(text = "Region")))
+fig
+```
+
+#### 7.	Which produce was the most grown in Surplus in Texas Farms in 2022?
+
+```{r}
+# Creating a dataframe of Texas Data with only Produce food type
+texas_df <- food_surplus_dtl_df2 %>% filter(year==2022,state=="TEXAS",food_type=="PRODUCE",!food_category=="NOT APPLICABLE") %>% group_by(food_category) %>% summarize(total_surplus=sum(tons_surplus)) %>% arrange(desc(total_surplus)) %>% head(6)
+# Creating a Donut plot of Surplus grown produce in Texas
+plot_ly(texas_df)%>%
+  add_pie(texas_df,labels=~factor(food_category),values=~total_surplus,
+          textinfo="label+percent",type='pie',hole=0.6)%>%
+  plotly::layout(title="<b>Produce grown in Excess in Texas Farms in 2022</b>",
+         legend = list(title = list(text = ""))) %>% hide_legend()
+```
+
+#### 8. Which state produced the most surplus Potatoes in each region in 2022?
+
+```{r}
+# Creating datframe to extract the data for Potatoes
+potatoes_df <- food_surplus_dtl_df2 %>% filter(year==2022,sector=="FARM",food_type=="PRODUCE",food_category=="POTATOES") %>% group_by(region,state) %>% summarize(total_surplus=sum(tons_surplus)) %>%  slice_max(total_surplus,n=1)
+
+# Creating a Treemap of Surplus Potatoes Production
+treemap(potatoes_df,index=c("region","state"),vSize="total_surplus",type="index",fontsize.labels = c(12,9),
+        fontcolor.labels = c("black","black"),bg.labels = c("transparent"),
+        align.labels = list(c("center","top"),c("center","center")),
+        border.col = c("black","white"),border.lwds = c(3,1),
+        title = "Treemap of Surplus Potatoes Production in 2022",fontfamily.title = 16,palette = "Set2")
+```
+
+#### 9. Which Mid west state had highest poverty rate and how much food was Wasted compared in 2022? 
+
+```{r}
+# Creating second Dataframe with Mid west data
+bubble_df2 <- join_df %>% filter(region %in% c("MID_WEST")) %>% group_by(state) %>% summarize(total_wasted=sum(meals_wasted)/1000, total_donated=sum(tons_donated),median_poverty=median(poverty_2022) )
+# Creating a Bubble plot of Meals wasted vs Poverty rates by Donated Food
+plot3 <- bubble_df2 %>% ggplot(aes(x=median_poverty, y=total_wasted, size=total_donated, color=as.factor(state)))+ geom_point(alpha=0.5)+scale_fill_distiller(palette = "RdPu") +scale_size(range=c(0.1,20)) + guides(fill=FALSE) +geom_text(aes(label=state), vjust=1,size=3) 
+p3 <- ggplotly(plot3, width=800, height=600) %>% plotly::layout(xaxis=list(range=c(5,13),title="Poverty Rate( in Percentage)"),
+                                                          yaxis=list(range=c(150,400),title = "Meals Wasted (in Thousands)"),
+                                                          title=list(text="Meals Wasted vs Poverty rates by Donated Food in the MidWest in 2022 ", y = 0.99, x = 0.5, xanchor = 'center', yanchor =  'top'),
+                                                          legend = list(title = list(text = "")))
+p3
+```
+
+#### 10.	Which state wasted the most meals per person in retail?
+
+
+
+```{r}
+# Creating a Map Dataframe with Retail Data
+map_df1 <- join_df %>% filter(sector %in% c("RETAIL")) %>% group_by(state) %>% summarize(total_meals_wasted=sum(meals_wasted),mean_pop=mean(population_2022)) %>% mutate(meals_per_person=total_meals_wasted/mean_pop) %>% arrange(desc(meals_per_person))
+# Joining the dataframe with states data
+map_df2 <- map_df1 %>% inner_join(state_df,by="state")
+```
+
+```{r}
+# give state boundaries a white border
+l <- list(color = toRGB("white"), width = 2)
+# specify some map projection/options
+g <- list(
+  scope = 'usa',
+  projection = list(type = 'albers usa'),
+  showlakes = TRUE,
+  lakecolor = toRGB('white')
+)
+fig <- plot_geo(map_df2, locationmode = 'USA-states')
+fig <- fig %>% add_trace(
+    z = ~meals_per_person, locations = ~Code,
+    color = ~meals_per_person, colors = 'Purples', text = ~Code
+  )
+fig <- fig %>% colorbar(title = "Meals wasted per Person")
+fig <- fig %>% plotly::layout(
+    title = '<b>Meals wasted per person in the US in 2022</b>',
+    geo = g, text = ~Code, 
+              mode = "text"
+  )
+fig
+```
+
+# Feature Engineering 
+
+```{r}
+target_var <- "meals_wasted"
+```
+
+```{r}
+# Extracting the columns with DOuble Datatype from merged dataframe
+dbl_colnames_join <- join_df %>% select(is.double) %>%  colnames
+# Creating a Dataframe with only Numeric features
+join_dbl_df0 <- join_df[dbl_colnames_join]
+```
+
+```{r}
+# Correlation Method to identify columns with Highest correlation
+corr_index <- findCorrelation(cor(join_dbl_df0), cutoff=0.9)
+highly_correlated_cols <- join_dbl_df0[,corr_index] %>% select(-meals_wasted) %>% colnames() 
+highly_correlated_cols
+```
+
+```{r}
+# Excluding the Highly correlated columns
+join_dbl_df0 <- join_dbl_df0 %>% select(-highly_correlated_cols)
+# Creating a Dummy Model based on the Numeric features
+lmMod <- lm(meals_wasted ~ . , data = join_dbl_df0)  
+# Creating a Variable to compute the importance of Features
+var_imp <- varImp(lmMod, scale = FALSE)
+# Creating a Dataframe with Important features
+var_imp_df <- data.frame(cbind(variable = rownames(var_imp), score = var_imp[,1]))
+var_imp_df$score <- as.double(var_imp_df$score)
+var_imp_df[order(var_imp_df$score,decreasing = TRUE),]
+# Plotting the Important Features
+ggplot(var_imp_df, aes(x=reorder(variable, score), y=score,color=variable)) + 
+  geom_point() +
+  geom_segment(aes(x=variable,xend=variable,y=0,yend=score)) +
+  ylab("IncNodePurity") +
+  xlab("Variable Name") + ggtitle("Importance of Features")+
+  coord_flip()+scale_color_discrete(guide="none")
+```
+
+```{r}
+# Selecting only the important featues and fing the correlation between them
+imp_features_df <- join_dbl_df0 %>% select(meals_wasted,tons_composted,tons_landfilled,tons_incinerated,tons_sewer,tons_animal_feed,tons_anaerobically_digested)
+df_correlation <- cor(imp_features_df, use="complete.obs")
+round(df_correlation,1)
+
+# Plotting Correlation Matrix
+ggcorrplot(df_correlation, 
+           hc.order = TRUE, 
+           type = "lower",
+           lab = TRUE) + 
+  labs(title = "Correlation Plot")
+```
+
+```{r}
+# Plotting a linear model with cleaned up data
+set.seed(38)
+# Excluding the Highly correlated columns
+join_dbl_df2 <- join_dbl_df0 %>% select(-tons_not_harvested,-tons_composted,-tons_landfilled)
+N <- nrow(join_dbl_df2)
+gp <- runif(N)
+df_train_lm1 <- join_dbl_df2[gp < 0.8, ]
+df_test_lm1 <- join_dbl_df2[gp >= 0.8, ]
+nrow(df_train_lm1)
+nrow(df_test_lm1)
+model_lm1 <- lm(meals_wasted ~ 0+., data=df_train_lm1)
+summary(model_lm1)
+```
+
+```{r}
+# Identifying columns with p values less than 0.05
+lm1_colnames <- tidy(model_lm1)  %>% filter(p.value <0.05) %>% select(term) %>% unlist %>% as.vector
+lm1_colnames
+```
+
+
+```{r}
+# Building a second Model to validate the results
+df_lm2 <- join_dbl_df2 %>% select(meals_wasted,lm1_colnames)
+N_lm2 <- nrow(df_lm2)
+gp_lm2 <- runif(N_lm2)
+# Creating test and Train datasets
+df_train_lm2 <- df_lm2[gp < 0.75, ]
+df_test_lm2 <- df_lm2[gp >= 0.75, ]
+nrow(df_train_lm2)
+nrow(df_test_lm2)
+model_lm2 <- lm(meals_wasted ~ 0+., data=df_train_lm2)
+summary(model_lm2)
+```
+```{r}
+# Identifying columns with p values less than 0.05 in the second model 
+lm2_colnames <- tidy(model_lm2)  %>% filter(p.value <0.05) %>% select(term) %>% unlist %>% as.vector
+lm2_colnames
+```
+```{r}
+
+# Selecting only the important featues and fing the correlation between them
+imp_features_df2 <- join_dbl_df2 %>% select(lm2_colnames,meals_wasted)
+df_correlation2 <- cor(imp_features_df2, use="complete.obs")
+round(df_correlation2,1)
+
+
+```
+
+
+```{r}
+# Function for R-Squared Values
+r_squared <- function(predcol, ycol) {
+  tss = sum( (ycol - mean(ycol))^2 )
+  rss = sum( (predcol - ycol)^2 )
+  1 - rss/tss
+}
+# Function to compute RMSE values
+rmse_fn <- function(predcol, ycol) {
+  res = predcol-ycol
+  sqrt(mean(res^2))
+}
+```
+
+
+
+```{r}
+# Creating a Dataframe to implement PCA
+df101 <- join_dbl_df2 %>% select(lm2_colnames,meals_wasted)
+vars <- df101 %>% colnames
+# Creating a Train and Test split
+data_split <- initial_split(df101, prop = 0.80, strata = meals_wasted)
+df_train <- training(data_split)
+df_test  <-  testing(data_split)
+df_pc_train <- df_train %>% select(-meals_wasted)
+# Standardizing the data
+train_normalized <- scale(df_pc_train)
+pca_new <- PCA(t(train_normalized), ncp=6,graph=FALSE)
+pca_df <- as.data.frame(pca_new$var$coord)
+summary(pca_new)
+```
+
+```{r}
+# Plotting the PCA plot
+fviz_eig(pca_new, addlabels = TRUE)
+```
+# Building Regression Models
+
+## Linear Regression Models
+
+```{r}
+# Function to create Dataset from Merged dataframe
+create_dataset <- function() {
+    all_fact_colnames <- join_df %>% select(is.factor) %>%  colnames
+    df <- join_df %>% select(all_fact_colnames,lm2_colnames,meals_wasted)
+    vars <- df %>% colnames
+    df <- df %>%  select(all_of(vars)) %>%  filter(complete.cases(.))
+    }
+
+# Function to create a Train and Test split. Returns Train and Test Datasets
+create_train_test_split <- function(df){
+    data_split <- initial_split(df, prop = 0.80, strata = meals_wasted)
+    df_train <- training(data_split)
+    df_test  <-  testing(data_split)
+    return(list(df_train=df_train,df_test=df_test))
+}
+
+# Function to Train model
+train_model <- function(df_train){
+    model <- train(
+    meals_wasted ~ ., 
+    data = df_train, 
+    method = 'lm',
+    trControl = trainControl(method = 'cv', number = 3)
+)
+    return(model)
+}
+
+# Function that computes the performance of Model such as RMSE and R-squared
+predict_publish_results <- function(df_test,model){
+    df_test <- df_test %>% add_column(predictions = predict(model, df_test)) 
+    # Get the rmse of the cross-validation predictions
+    rmse_val <- rmse_fn(df_test$predictions, df_test$meals_wasted)
+    # Get the rmse of the cross-validation predictions
+    r_squared_val <- r_squared(df_test$predictions, df_test$meals_wasted)
+    return(list(df_test=df_test,rmse_val=rmse_val,r_squared_val=r_squared_val)) 
+}
+
+# Function that plots the results of the model. Takes the Model and the train & Test sets as inputs
+create_model_plots <- function(df_train,df_test,model){
+    plot1 <- df_test %>%
+    ggplot(aes(meals_wasted, predictions)) + 
+     geom_point(shape = 1, size = 1.5, alpha = 0.6) +
+    geom_abline() +
+    labs(title = 'Predicted vs. Actual Meals Wasted',
+       x = 'Predicted ',
+       y = 'Actual ') +
+    theme_bw()
+    df_lm <- broom::augment(model$finalModel, data = df_train)
+    plot2 <- ggplot(df_lm, aes(.fitted, .std.resid)) + 
+    geom_point(shape = 1, size = 1.5, alpha = 0.6) +
+    labs(title = 'Predicted vs. Residuals - Model',
+       x = 'Predicted Meals',
+       y = 'Residuals') + theme_bw()
+    return(list(plot1=plot1,plot2=plot2))
+}
+
+# Function to perform PCA on the Dataframe. Takes number of PCA features as Parameters ncp
+perform_pca <- function(df,ncp){
+    df_pc <- df %>% select(-meals_wasted ) 
+    normalized_df <- scale(df_pc)
+    pca_new <- PCA(t(normalized_df), ncp=ncp,graph=FALSE)
+    temp_pca_df <- as.data.frame(pca_new$var$coord)
+    pca_df <- bind_cols(temp_pca_df,meals_wasted=df$meals_wasted)
+    return(pca_df)
+}
+
+# Function to Create Models using PCA. This inturn calls the functions created above
+create_models <- function(df,ncp) {
+    return_lm <- create_train_test_split(df)
+    df_train <- return_lm$df_train
+    df_test <- return_lm$df_test
+    df_pca_train <- perform_pca(df_train,ncp)
+    df_pca_test <- perform_pca(df_test,ncp)
+    model <- train_model(df_pca_train)
+    predict_results <- predict_publish_results(df_pca_test,model)
+    df_pca_test <- predict_results$df_test
+    rmse_val <- predict_results$rmse_val
+    r_squared_val <- predict_results$r_squared_val
+    plot_object <- create_model_plots(df_pca_train,df_pca_test,model)
+    return(list(rmse_val=rmse_val,r_squared_val=r_squared_val,plot1=plot_object$plot1,plot2=plot_object$plot2))
+}
+
+# Function to Create Models without PCA. This inturn calls the functions created above
+create_models_without_pca <- function(df) {
+    return_lm <- create_train_test_split(df)
+    df_train <- return_lm$df_train
+    df_test <- return_lm$df_test
+    model <- train_model(df_train)
+    predict_results <- predict_publish_results(df_test,model)
+    df_test <- predict_results$df_test
+    rmse_val <- predict_results$rmse_val
+    r_squared_val <- predict_results$r_squared_val
+    plot_object <- create_model_plots(df_train,df_test,model)
+    return(list(rmse_val=rmse_val,r_squared_val=r_squared_val,plot1=plot_object$plot1,plot2=plot_object$plot2))
+}
+```
+
+```{r}
+# Creating a adTaframe to capture the Model results
+model_results_df <- data.frame(ncp=integer(),
+                 modelname=character(),
+                 Rsquared = double(), RMSEmodel = double(),
+                 stringsAsFactors=FALSE)
+```
+
+```{r}
+# Creating a Simple Regression Model
+df_lm4 <- create_dataset()
+return_model_lm4 <- create_models_without_pca(df_lm4)
+model_results_df <- rbind(model_results_df,list(ncp=0,modelname="Simple Model",Rsquared=return_model_lm4$r_squared_val,RMSEmodel=return_model_lm4$rmse_val))
+model_results_df
+gridExtra::grid.arrange(return_model_lm4$plot1, return_model_lm4$plot2, nrow = 1)
+```
+
+
+```{r}
+# Creating a Caret Regression Model
+df_caret5 <- create_dataset()
+# Handling the dummy variables
+dummies_model_caret <- dummyVars(meals_wasted ~ ., data = df_caret5, fullRank = T)
+df_caret5_mat <- predict(dummies_model_caret, newdata = df_caret5)
+meals_wasted <- df_caret5 %>%     select(meals_wasted) %>%    unlist(use.names = FALSE)
+df_caret5_dummy <- data.frame(df_caret5_mat) %>%  add_column(meals_wasted = meals_wasted) %>%  select(meals_wasted, everything())
+return_model_caret5 <- create_models_without_pca(df_caret5_dummy)
+model_results_df <- rbind(model_results_df,list(ncp=0,modelname="Caret Model",Rsquared=return_model_caret5$r_squared_val,RMSEmodel=return_model_caret5$rmse_val))
+gridExtra::grid.arrange(return_model_caret5$plot1, return_model_caret5$plot2, nrow = 1) 
+```
+
+```{r}
+# Creating Regression MOdel using vTreat Package
+df_vtreat6 <- create_dataset()
+# Creating a Treatment plan
+treatment_plan <- designTreatmentsN(
+      df_vtreat6, 
+      colnames(df_vtreat6),
+      outcomename = 'meals_wasted',
+      codeRestriction = c('lev', 'catN', 'clean', 'isBAD')
+)
+# Preparing the Data for Model building
+df_trt6 <- vtreat::prepare(treatment_plan, df_vtreat6)
+# Creating models without implementing the PCA
+return_model_vtreat6 <- create_models_without_pca(df_trt6)
+model_results_df <- rbind(model_results_df,list(ncp=0,modelname="vTreat Model",Rsquared=return_model_vtreat6$r_squared_val,RMSEmodel=return_model_vtreat6$rmse_val))
+return_model_vtreat6$rmse_val
+return_model_vtreat6$r_squared_val
+gridExtra::grid.arrange(return_model_vtreat6$plot1, return_model_vtreat6$plot2, nrow = 1)
+# Creating models by implementing the PCA
+return_model_vtreat6 <- create_models(df_trt6,ncp=12)
+return_model_vtreat6$rmse_val
+return_model_vtreat6$r_squared_val
+gridExtra::grid.arrange(return_model_vtreat6$plot1, return_model_vtreat6$plot2, nrow = 1)
+```
+
+```{r}
+# Building a Regression model using Recipe Package
+df_recipe7 <- create_dataset()
+# Creating a Blueprint for Recipe Model
+blueprint <- recipe(meals_wasted ~ ., data = df_recipe7) %>%
+      step_dummy(all_nominal(), one_hot = FALSE)
+prepare <- recipes::prep(blueprint, training = df_recipe7)
+df_recipe7_baked <- bake(prepare, new_data = df_recipe7)
+# Creating the model without PCA
+return_model_recipe7 <- create_models_without_pca(df_recipe7_baked)
+model_results_df <- rbind(model_results_df,list(ncp=0,modelname="Recipe Model",Rsquared=return_model_recipe7$r_squared_val,RMSEmodel=return_model_recipe7$rmse_val))
+return_model_recipe7$rmse_val
+return_model_recipe7$r_squared_val
+gridExtra::grid.arrange(return_model_recipe7$plot1, return_model_recipe7$plot2, nrow = 1)
+```
+
+## Regularized Regression Models
+
+
+```{r}
+# Preparing the data for Regularized models
+df_modeldata <- df_trt6
+features_mat <- model.matrix(meals_wasted~., df_modeldata) 
+target <-  df_modeldata %>%
+  select(meals_wasted) %>%
+  unlist() %>%
+  as.numeric()
+```
+
+### Building Ridge Model 
+
+```{r}
+# Creating a Grid of Lambda values
+lambda_grid <-  10^seq(10, -2, length = 100)
+# Creating Train and Test sets 
+train_df <-  df_modeldata %>%
+  sample_frac(0.8)
+test_df <-  df_modeldata %>%
+  setdiff(train_df)
+x_train <-  model.matrix(meals_wasted~., train_df) 
+x_test <-  model.matrix(meals_wasted~., test_df)
+y_train <-  train_df %>%
+  select(meals_wasted) %>%
+  unlist() %>%
+  as.numeric()
+y_test <-  test_df %>%
+  select(meals_wasted) %>%
+  unlist() %>%
+  as.numeric()
+```
+
+```{r}
+cv_ridge <-  cv.glmnet(x_train, y_train, alpha = 0) # Fit ridge regression model on training data
+bestlam_ridge <-  cv_ridge$lambda.min  # Select lambda that minimizes training RMSE
+bestlam_ridge
+# Creating Ridge Model with all values in the Lambda Grid
+ridge_model <-  glmnet(x_train, y_train, alpha=0, lambda = lambda_grid)
+# Use best lambda to predict test data
+ridge_pred <-  predict(ridge_model, s = bestlam_ridge, newx = x_test) 
+# Calculate test RMSE
+rmse_ridge_cv <- mean((ridge_pred - y_test)^2) %>% sqrt()
+rmse_ridge_cv
+# Calculate test R squared Values
+rsq_ridge_cv <- cor(ridge_pred, y_test)^2
+rsq_ridge_cv
+# Appending the results to the Model Results Dataframe
+model_results_df <- rbind(model_results_df,list(ncp=0,modelname="Ridge Model",Rsquared=rsq_ridge_cv,RMSEmodel=rmse_ridge_cv))
+```
+### Building Lasso Model 
+
+```{r}
+# Training Lasso Model on Train sets
+lasso_model = glmnet(x_train, 
+                   y_train, 
+                   alpha = 1, 
+                   lambda = lambda_grid) # Fit lasso model on training data
+# Fit lasso model on training data
+cv_lasso = cv.glmnet(x_train, y_train, alpha = 1) 
+# Select lambda that minimizes training RMSE
+bestlam_lasso =cv_lasso$lambda.min 
+# Use best lambda to predict test data
+lasso_pred = predict(lasso_model, s = bestlam_lasso, newx = x_test) 
+# Calculate test RMSE
+rmse_lasso_cv <- mean((lasso_pred - y_test)^2) %>% sqrt() 
+rmse_lasso_cv
+# Calculate test R-squared
+rsq_lasso_cv <- cor(lasso_pred, y_test)^2
+rsq_lasso_cv
+# Appending the results to the Model Results Dataframe
+model_results_df <- rbind(model_results_df,list(ncp=0,modelname="Lasso Model",Rsquared=rsq_lasso_cv,RMSEmodel=rmse_lasso_cv))
+```
+
+### Building Elastic Net Model 
+
+
+```{r}
+# Creating X and Y datasets
+X <- df_modeldata %>%  
+     select(meals_wasted) %>%  
+     scale(center = TRUE, scale = FALSE) %>%  
+     as.matrix() 
+Y <- df_modeldata %>%  
+    select(-meals_wasted) %>%  
+    as.matrix() 
+  
+# Model Building : Elastic Net Regression 
+control <- trainControl(method = "repeatedcv", 
+                              number = 2, 
+                              repeats = 2, 
+                              search = "random", 
+                              verboseIter = TRUE) 
+  
+# Training ELastic Net Regression model 
+elastic_model <- train(meals_wasted ~ ., 
+                           data = cbind(X, Y), 
+                           method = "glmnet", 
+                           preProcess = c("center", "scale"), 
+                           tuneLength = 25, 
+                           trControl = control) 
+  
+elastic_model 
+
+# Model Prediction 
+x_hat_pre <- predict(elastic_model, Y) 
+
+  
+# Multiple R-squared 
+rsq_elastic_net <- cor(X, x_hat_pre)^2 
+rsq_elastic_net 
+# Calculating the RMSE
+rmse_elastic_net <- mean(elastic_model$resample$RMSE)
+rmse_elastic_net
+# Appending the results to the Model Results Dataframe
+model_results_df <- rbind(model_results_df,list(ncp=0,modelname="Elastic Net Model",Rsquared=rsq_elastic_net,RMSEmodel=rmse_elastic_net))
+# Ploting the model results 
+plot(elastic_model, main = "Elastic Net Regression") 
+```
+
+```{r}
+# Displaying all the Model results in the Order of Highest Rsquared values. 
+model_results_df <- model_results_df %>% select(modelname, Rsquared,RMSEmodel) %>% arrange(desc(Rsquared))
+kbl(model_results_df,caption = "Regression Model results", booktabs = T) %>% kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+
